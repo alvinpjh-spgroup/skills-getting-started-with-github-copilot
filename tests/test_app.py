@@ -1,29 +1,12 @@
-"""
-High School Management System API
+import pytest
+from fastapi.testclient import TestClient
 
-A super simple FastAPI application that allows students to view and sign up
-for extracurricular activities at Mergington High School.
-"""
+import copy
+from src.app import app, activities
 
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
-import os
-from pathlib import Path
+client = TestClient(app)
 
-app = FastAPI(title="Mergington High School API",
-              description="API for viewing and signing up for extracurricular activities")
-
-# Mount the static files directory
-current_dir = Path(__file__).parent
-app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
-          "static")), name="static")
-
-def get_activities_db():
-    return activities
-
-# In-memory activity database
-activities = {
+ORIGINAL_ACTIVITIES = {
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
         "schedule": "Fridays, 3:30 PM - 5:00 PM",
@@ -42,7 +25,6 @@ activities = {
         "max_participants": 30,
         "participants": ["john@mergington.edu", "olivia@mergington.edu"]
     },
-    # Sports related activities
     "Soccer Team": {
         "description": "Join the school soccer team and compete in matches",
         "schedule": "Wednesdays, 4:00 PM - 5:30 PM",
@@ -55,7 +37,6 @@ activities = {
         "max_participants": 15,
         "participants": ["mia@mergington.edu", "noah@mergington.edu"]
     },
-    # Artistic activities
     "Art Workshop": {
         "description": "Explore painting, drawing, and sculpture techniques",
         "schedule": "Mondays, 4:00 PM - 5:30 PM",
@@ -68,7 +49,6 @@ activities = {
         "max_participants": 20,
         "participants": ["ella@mergington.edu", "jack@mergington.edu"]
     },
-    # Intellectual activities
     "Mathletes": {
         "description": "Compete in math competitions and solve challenging problems",
         "schedule": "Fridays, 4:00 PM - 5:00 PM",
@@ -83,37 +63,51 @@ activities = {
     }
 }
 
+@pytest.fixture(autouse=True)
+def reset_activities():
+    # Reset the activities dict before each test
+    for k in list(activities.keys()):
+        del activities[k]
+    for k, v in ORIGINAL_ACTIVITIES.items():
+        activities[k] = copy.deepcopy(v)
 
-@app.get("/")
-def root():
-    return RedirectResponse(url="/static/index.html")
-
-
-@app.get("/activities")
-def get_activities(db=Depends(get_activities_db)):
-    return db
-
-
-@app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str, db=Depends(get_activities_db)):
-    """Sign up a student for an activity"""
-    # Validate activity exists
-    if activity_name not in db:
-        raise HTTPException(status_code=404, detail="Activity not found")
-    activity = db[activity_name]
-    if email in activity["participants"]:
-        raise HTTPException(status_code=400, detail="Student already signed up for this activity")
-    activity["participants"].append(email)
-    return {"message": f"Signed up {email} for {activity_name}"}
+def test_get_activities():
+    response = client.get("/activities")
+    assert response.status_code == 200
+    data = response.json()
+    assert "Chess Club" in data
+    assert "Programming Class" in data
 
 
-@app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str, db=Depends(get_activities_db)):
-    """Remove a student from an activity"""
-    if activity_name not in db:
-        raise HTTPException(status_code=404, detail="Activity not found")
-    activity = db[activity_name]
-    if email not in activity["participants"]:
-        raise HTTPException(status_code=404, detail="Participant not found in this activity")
-    activity["participants"].remove(email)
-    return {"message": f"Unregistered {email} from {activity_name}"}
+def test_signup_for_activity():
+    email = "newstudent@mergington.edu"
+    activity = "Chess Club"
+    # Ensure not already signed up
+    client.delete(f"/activities/{activity}/unregister?email={email}")
+    response = client.post(f"/activities/{activity}/signup?email={email}")
+    assert response.status_code == 200
+    assert response.json()["message"] == f"Signed up {email} for {activity}"
+    # Try signing up again (should fail)
+    response = client.post(f"/activities/{activity}/signup?email={email}")
+    assert response.status_code == 400
+
+
+def test_unregister_from_activity():
+    email = "removeme@mergington.edu"
+    activity = "Programming Class"
+    with TestClient(app) as local_client:
+        signup_response = local_client.post(f"/activities/{activity}/signup?email={email}")
+        assert signup_response.status_code == 200
+        response = local_client.delete(f"/activities/{activity}/unregister?email={email}")
+        assert response.status_code == 200
+        assert response.json()["message"] == f"Unregistered {email} from {activity}"
+        # Try removing again (should fail)
+        response = local_client.delete(f"/activities/{activity}/unregister?email={email}")
+        assert response.status_code == 404
+
+
+def test_activity_not_found():
+    response = client.post("/activities/Nonexistent/signup?email=test@mergington.edu")
+    assert response.status_code == 404
+    response = client.delete("/activities/Nonexistent/unregister?email=test@mergington.edu")
+    assert response.status_code == 404
